@@ -1,0 +1,158 @@
+from google.adk.agents.callback_context import CallbackContext
+from datetime import datetime, timedelta
+import dateparser
+from google.adk.tools.tool_context import ToolContext
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+import os
+
+import asyncio
+import importlib
+import os
+import warnings
+
+import base64
+from io import BytesIO
+from PIL import Image
+import os
+from google import genai
+from google.genai.types import Part
+
+
+from google.adk.agents import Agent
+from google.adk.models.lite_llm import LiteLlm  # For multi-model support
+from google.adk.runners import Runner
+from google.adk.sessions import InMemorySessionService
+from google.adk.tools.tool_context import ToolContext
+from google.genai import types  # For creating message Content/Parts
+from IPython.display import HTML, Markdown, display
+
+def get_date(callback_context: CallbackContext):
+    """
+    Retrieves a date for today.
+
+    Returns:
+        A dict with the date in a formal writing format. For example:
+        {"date": "Wednesday, May 7, 2025"}
+    """
+
+    today_date = datetime.today().strftime("%A, %B %d, %Y")
+    callback_context.state["dateoftoday"] = today_date
+
+
+def capture_nikkei_screenshot(callback_context: CallbackContext):
+    """
+    指定されたGoogle FinanceのURLを開き、スクリーンショットを撮影・保存します。
+    """
+    print(f"--- 1. WebDriver設定 ---")
+
+    # --- 実行部分 ---
+    url = "https://www.google.com/finance/quote/NI225:INDEXNIKKEI"
+    filename = "n225_google_finance_screenshot.png"
+    # 1. Chromeオプションの設定
+    chrome_options = Options()
+    print("2")
+    # 💡 サーバー環境で必須の設定 (画面を表示しない「ヘッドレスモード」)
+    chrome_options.add_argument("--headless") 
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    print("3")
+    # 画面サイズを設定（このサイズでスクリーンショットが撮影されます）
+    chrome_options.add_argument("--window-size=1920,1080")
+
+    # 2. WebDriverの初期化と実行
+    driver = None # エラー時にもdriverを閉じられるように初期化
+    try:
+        # WebDriverを起動
+        # 💡 注意: ColabやGCP Notebooksではこれで動きますが、ローカル環境では
+        # ChromeDriverのパス指定が必要な場合があります。
+        driver = webdriver.Chrome(options=chrome_options)
+
+        print(f"--- 2. ページアクセス ---")
+        driver.get(url)
+
+        # ページが完全に読み込まれるまで少し待機（必須ではありませんが安定します）
+        # driver.implicitly_wait(5) 
+
+        # 3. スクリーンショットの撮影と保存
+        driver.save_screenshot(filename)
+
+        print(f"✅ 撮影完了！ファイル名: {filename}")
+        if os.path.exists(filename):
+            print(f"ファイルサイズ: {os.path.getsize(filename) / 1024:.2f} KB")
+
+    except Exception as e:
+        print(f"❌ エラーが発生しました。原因: {e}")
+        print("環境にChrome/ChromeDriverが正しくインストールされているか確認してください。")
+
+    finally:
+        # 処理を終える際には、必ずブラウザを閉じる（リソース解放）
+        if driver:
+            driver.quit()
+
+
+
+def analyze_image_from_path(callback_context: CallbackContext):
+    """
+    画像ファイルパスを指定し、Gemini Visionに説明を要求する最小限の関数。
+
+    Args:
+        image_path (str): 説明させたい画像ファイルへのパス。
+        prompt (str): 画像に対して求める説明（例: "この画像の内容を説明してください"）。
+
+    Returns:
+        str: Geminiが生成した画像の説明テキスト。
+    """
+
+    image_path = "/home/user/kadai_1/kadai1_git/adk_agents/n225_google_finance_screenshot.png" 
+    prompt = "この画像はN225株価です。表示されている株価の値をJSON形式で抽出してください。"
+
+    if not os.path.exists(image_path):
+        return f"エラー: ファイルが見つかりません: {image_path}"
+
+    # 1. 画像ファイルを読み込み、Base64エンコード
+    img = Image.open(image_path)
+    buffer = BytesIO()
+    img.save(buffer, format="PNG") 
+    image_bytes = buffer.getvalue()
+
+    # 2. Geminiの Part オブジェクトを作成
+    image_part = Part.from_bytes(
+        data=image_bytes,
+        mime_type='image/png' 
+    )
+
+    # clientは外部で定義されている前提
+    client = genai.Client()
+    # 3. Gemini APIを呼び出し
+    try:
+        response = client.models.generate_content(
+            model='gemini-2.5-flash', 
+            contents=[
+                prompt,         # テキストプロンプト
+                image_part      # 画像データ
+            ]
+        )
+
+        callback_context.state["priceoftoday"] = response
+
+    except Exception as e:
+        callback_context.state["priceoftoday"] = "None"
+
+
+# --- Tool Definition ---
+def exit_loop(tool_context: ToolContext):
+  """Call this function ONLY when the critique indicates no further changes are needed, signaling the iterative process should end."""
+  print(f"  [Tool Call] exit_loop triggered by {tool_context.agent_name}")
+  tool_context.actions.escalate = True
+  # Return empty dict as tools should typically return JSON-serializable output
+  return {}
+
+
+def report_tool():
+    """
+    ダミーツール
+    """
+    print("--- ダミーツール動作確認 ---")
+
+    return {}
